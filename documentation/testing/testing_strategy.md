@@ -1,30 +1,85 @@
-# Testing Strategy & Quality Assurance Framework
+# Testing Strategy & Execution Guide
 
-## 1. Overview
-Ensuring high call quality, reliable signaling, and robust error handling requires a multi-layered testing strategy spanning unit tests, API integration tests, WebSocket signaling simulation, and WebRTC peer connection verification.
-
----
-
-## 2. Test Layers
-
-### 2.1 Backend Unit & Integration Tests
-- **Database Model Tests**: Verify relationships, FK constraints, and schema validations.
-- **REST API Endpoints**: Test QR code validation, invalid ID handling, 404 responses, and call session creation.
-- **Token Security**: Verify signed signaling token generation and expiration rules.
-
-### 2.2 WebSocket Signaling Verification
-- Simulate two independent WebSocket clients joining the same `callId` room.
-- Verify exact event delivery (`offer`, `answer`, `ice-candidate`, `call:decline`, `call:end`).
-- Test edge cases: connection drop during ringing, duplicate join attempts, unauthorized room access.
-
-### 2.3 WebRTC Peer-to-Peer & Media Testing
-- Mock media stream testing (`fake-media-stream` flags in headless browsers).
-- STUN/TURN fallback testing (simulating restrictive NAT environments).
-- Re-negotiation and media track toggle (mute audio / pause video) tests.
+This guide details how to set up, run, and end-to-end test the QR P2P Video Call App locally and in production.
 
 ---
 
-## 3. Test Execution Records
-| Date | Test Scope | Result | Notes / Artifacts |
-|---|---|---|---|
-| *Pending* | Initial Setup | Pending | System initialization phase |
+## 1. Prerequisites & Environment Setup
+
+Before testing locally, configure your `.env.local` file with valid keys:
+
+```bash
+# 1. Copy template to .env.local
+cp .env.example .env.local
+```
+
+Fill in `.env.local`:
+1. **`DATABASE_URL`**: Your Railway PostgreSQL connection string (or local PostgreSQL `postgresql://postgres:postgres@localhost:5432/p2p_video`).
+2. **`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` & `CLERK_SECRET_KEY`**: Obtain from your [Clerk Dashboard](https://dashboard.clerk.com).
+3. **`NEXT_PUBLIC_VAPID_PUBLIC_KEY` & `VAPID_PRIVATE_KEY`**: Generate via CLI:
+   ```bash
+   npx web-push generate-vapid-keys
+   ```
+
+---
+
+## 2. Database Schema & Data Seeding
+
+Run the database setup commands to push table schemas and populate test data:
+
+```bash
+# 1. Push database tables to PostgreSQL
+npm run db:push
+
+# 2. Seed mock QR code and test receiver host into database
+npm run db:seed
+```
+
+*Note down the generated QR Code ID output by `npm run db:seed` (e.g. `123e4567-e89b-12d3-a456-426614174000`).*
+
+---
+
+## 3. Starting Local Development Server
+
+Start the custom Next.js + Socket.io server:
+
+```bash
+npm run dev
+```
+
+The application will be live at `http://localhost:3000`.
+
+---
+
+## 4. End-to-End Test Execution Flows
+
+### Flow 1: Host Receiver Login & Push Setup
+1. Open Chrome/Firefox and navigate to `http://localhost:3000/dashboard`.
+2. Sign in via Clerk.
+3. On the Host Dashboard, click **Enable Push Alerts** to grant browser notification permissions.
+
+### Flow 2: Guest QR Code Scan & Call Placement
+1. Open an Incognito window or second browser tab.
+2. Navigate directly to `http://localhost:3000/scan/<qrCodeId>` (replace `<qrCodeId>` with the UUID from `npm run db:seed`, or test camera scanning at `http://localhost:3000/scan`).
+3. View the available host recipient ("Front Desk Host").
+4. Enter an optional guest name (e.g., "Visitor John") and click **Call**.
+
+### Flow 3: WebRTC Video Call Session
+1. The guest browser redirects to `/call/<callId>?role=guest`.
+2. The host receives a browser push notification or opens `/call/<callId>?role=host`.
+3. Allow camera/microphone access in both browser windows.
+4. **Verify**:
+   - Both local and remote video streams render in real time.
+   - Microphone toggle (Mute/Unmute) functions on both sides.
+   - Camera toggle (On/Off) updates local PiP and remote feed.
+   - Clicking **End Call** closes the peer connection and returns users to the homepage/dashboard.
+
+---
+
+## 5. Automated Verification Commands
+
+To verify TypeScript types and production build integrity at any time:
+
+```bash
+npm run build
+```

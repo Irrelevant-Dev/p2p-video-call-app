@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "tsx src/server.ts",
+    "dev": "npx tsx src/server.ts",
     "build": "next build",
-    "start": "tsx src/server.ts",
+    "start": "npx tsx src/server.ts",
     "lint": "next lint",
-    "db:push": "drizzle-kit push",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:push": "drizzle-kit push:pg",
+    "db:seed": "npx tsx src/db/seed.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^5.0.0",

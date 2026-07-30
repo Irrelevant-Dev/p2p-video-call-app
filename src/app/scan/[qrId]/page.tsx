@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Image from 'next/image';
 import Link from 'next/link';
+import { io } from 'socket.io-client';
 import { ArrowLeft, User, PhoneCall, Loader2, QrCode } from 'lucide-react';
 
 interface Receiver {
@@ -62,6 +63,14 @@ export default function QrReceiverSelectionPage() {
 
       if (!res.ok) throw new Error('Failed to initiate call');
       const { callId } = await res.json();
+
+      // Emit socket notification to active receiver presence
+      const socket = io();
+      socket.emit('notify-receiver', {
+        targetReceiverId,
+        callId,
+        guestName: guestName.trim() || 'Guest Caller',
+      });
 
       // Navigate guest directly to call room
       router.push(`/call/${callId}?role=guest`);

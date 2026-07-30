@@ -3,7 +3,9 @@
 import { useEffect, useState } from 'react';
 import { useUser, UserButton } from '@clerk/nextjs';
 import Link from 'next/link';
-import { Bell, BellRing, Video, ShieldCheck, QrCode, Loader2 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { io } from 'socket.io-client';
+import { Bell, BellRing, Video, ShieldCheck, QrCode, Loader2, PhoneCall, PhoneOff } from 'lucide-react';
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -16,13 +18,24 @@ function urlBase64ToUint8Array(base64String: string) {
   return outputArray;
 }
 
+interface IncomingCallInfo {
+  callId: string;
+  guestName: string;
+}
+
 export default function ReceiverDashboardPage() {
   const { user, isLoaded } = useUser();
+  const router = useRouter();
   const [pushEnabled, setPushEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  const [incomingCall, setIncomingCall] = useState<IncomingCallInfo | null>(null);
+
+  const receiverId = user?.id || 'user_mock_receiver_123';
+
   useEffect(() => {
+    // Register service worker
     if ('serviceWorker' in navigator && 'PushManager' in window) {
       navigator.serviceWorker.register('/sw.js').then((reg) => {
         reg.pushManager.getSubscription().then((sub) => {
@@ -32,7 +45,20 @@ export default function ReceiverDashboardPage() {
         });
       });
     }
-  }, []);
+
+    // Connect socket for live in-app incoming call alerts
+    const socket = io();
+    socket.emit('register-receiver', { receiverId });
+
+    socket.on('incoming-call', (callData: IncomingCallInfo) => {
+      console.log('Incoming live call event:', callData);
+      setIncomingCall(callData);
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [receiverId]);
 
   async function enablePushNotifications() {
     setLoading(true);
@@ -76,6 +102,24 @@ export default function ReceiverDashboardPage() {
     }
   }
 
+  function handleAcceptCall(callId: string) {
+    setIncomingCall(null);
+    router.push(`/call/${callId}?role=host`);
+  }
+
+  async function handleDeclineCall(callId: string) {
+    setIncomingCall(null);
+    try {
+      await fetch(`/api/calls/${callId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'declined' }),
+      });
+    } catch (err) {
+      console.error('Decline error:', err);
+    }
+  }
+
   if (!isLoaded) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white">
@@ -86,7 +130,44 @@ export default function ReceiverDashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col">
+    <div className="relative min-h-screen bg-slate-950 text-white flex flex-col">
+      {/* Incoming Call Ringing Modal Overlay */}
+      {incomingCall && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-6 animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-indigo-500/60 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
+            <div className="relative w-20 h-20 mx-auto mb-6 flex items-center justify-center">
+              <div className="absolute inset-0 bg-indigo-600 rounded-full animate-ping opacity-75"></div>
+              <div className="relative w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center text-white shadow-xl">
+                <PhoneCall className="w-8 h-8" />
+              </div>
+            </div>
+
+            <h2 className="text-2xl font-bold text-white mb-1">Incoming Video Call</h2>
+            <p className="text-slate-400 text-sm mb-8">
+              <span className="font-semibold text-indigo-300">{incomingCall.guestName}</span> is calling from a QR Station...
+            </p>
+
+            <div className="flex items-center justify-center space-x-4">
+              <button
+                onClick={() => handleDeclineCall(incomingCall.callId)}
+                className="flex-1 py-3.5 bg-red-600 hover:bg-red-500 text-white font-semibold rounded-xl flex items-center justify-center space-x-2 transition"
+              >
+                <PhoneOff className="w-5 h-5" />
+                <span>Decline</span>
+              </button>
+
+              <button
+                onClick={() => handleAcceptCall(incomingCall.callId)}
+                className="flex-1 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl flex items-center justify-center space-x-2 transition shadow-lg transform active:scale-95"
+              >
+                <PhoneCall className="w-5 h-5" />
+                <span>Answer Call</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Navigation Bar */}
       <header className="border-b border-slate-800 bg-slate-900/80 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center space-x-3">
@@ -114,7 +195,7 @@ export default function ReceiverDashboardPage() {
               <span>Clerk Authenticated Host</span>
             </div>
             <h1 className="text-2xl font-bold text-white">
-              Welcome back, {user?.firstName || user?.emailAddresses[0]?.emailAddress}!
+              Welcome back, {user?.firstName || user?.emailAddresses[0]?.emailAddress || 'Host'}!
             </h1>
             <p className="text-slate-400 text-sm mt-1">
               You are ready to receive incoming QR video calls from visitors.

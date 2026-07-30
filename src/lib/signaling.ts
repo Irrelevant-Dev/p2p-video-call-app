@@ -1,6 +1,12 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Server as HTTPServer } from 'http';
 
+let globalIO: SocketIOServer | null = null;
+
+export function getIO(): SocketIOServer | null {
+  return globalIO;
+}
+
 export function setupSignalingServer(httpServer: HTTPServer) {
   const io = new SocketIOServer(httpServer, {
     cors: {
@@ -8,9 +14,19 @@ export function setupSignalingServer(httpServer: HTTPServer) {
       methods: ['GET', 'POST'],
     },
   });
+  globalIO = io;
 
   io.on('connection', (socket: Socket) => {
     console.log(`Socket client connected: ${socket.id}`);
+
+    // Join receiver host presence room
+    socket.on('register-receiver', ({ receiverId }) => {
+      if (receiverId) {
+        const room = `receiver:${receiverId}`;
+        socket.join(room);
+        console.log(`Socket ${socket.id} registered as receiver ${receiverId}`);
+      }
+    });
 
     // Join room for specific call session
     socket.on('join-room', ({ callId, userType }) => {
@@ -20,6 +36,14 @@ export function setupSignalingServer(httpServer: HTTPServer) {
 
       // Notify others in room
       socket.to(roomName).emit('peer-joined', { socketId: socket.id, userType });
+    });
+
+    // Notify receiver of incoming call
+    socket.on('notify-receiver', ({ targetReceiverId, callId, guestName }) => {
+      io.to(`receiver:${targetReceiverId}`).emit('incoming-call', {
+        callId,
+        guestName,
+      });
     });
 
     // Relay WebRTC Offer
