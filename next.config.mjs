@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  allowedDevOrigins: ['192.168.1.37:3000', 'localhost:3000'],
+  allowedDevOrigins: ['rare-shirts-beg.loca.lt', '192.168.1.37:3000', 'localhost:3000'],
   images: {
     remotePatterns: [
       {

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, User, Loader2, Terminal, ChevronDown, ChevronUp } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, User, Loader2, Terminal, ChevronDown, ChevronUp, AlertTriangle, Lock } from 'lucide-react';
 
 const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
@@ -32,6 +32,7 @@ export default function CallRoomPage() {
 
   const [callSession, setCallSession] = useState<any>(null);
   const [callStatus, setCallStatus] = useState<string>('connecting');
+  const [httpsWarning, setHttpsWarning] = useState<boolean>(false);
 
   const [micEnabled, setMicEnabled] = useState(true);
   const [cameraEnabled, setCameraEnabled] = useState(true);
@@ -67,6 +68,13 @@ export default function CallRoomPage() {
         const sessionData = await res.json();
         setCallSession(sessionData);
         log(`Call session retrieved (Guest: ${sessionData.guestName})`, 'success');
+
+        // Check for Secure Context / mediaDevices support
+        if (typeof window !== 'undefined' && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)) {
+          setHttpsWarning(true);
+          log('CRITICAL: navigator.mediaDevices is undefined. Browser requires HTTPS or localhost for camera/mic access.', 'error');
+          throw new Error('Camera/microphone access requires a Secure Context (HTTPS or localhost). Browsers disable media APIs over plain HTTP LAN IPs.');
+        }
 
         // Get Local Media Stream
         log('Requesting local camera & microphone access...', 'info');
@@ -322,17 +330,36 @@ export default function CallRoomPage() {
         />
         {callStatus !== 'active' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-md z-10 p-6">
-            <Loader2 className="w-12 h-12 animate-spin text-indigo-400 mb-4" />
-            <h2 className="text-2xl font-bold mb-2 text-center">
-              {callStatus === 'ringing'
-                ? 'Ringing Recipient...'
-                : callStatus === 'connecting'
-                ? 'Connecting Call Room...'
-                : 'Waiting for Peer to Connect...'}
-            </h2>
-            <p className="text-slate-400 text-sm text-center">
-              {callSession?.guestName || 'Guest'} &bull; {callSession?.receiverName || 'Host'}
-            </p>
+            {httpsWarning ? (
+              <div className="bg-red-950/90 border border-red-800 rounded-3xl p-8 max-w-lg w-full text-center shadow-2xl animate-in fade-in">
+                <div className="w-16 h-16 bg-red-900/60 rounded-full flex items-center justify-center mx-auto mb-4 text-red-400">
+                  <Lock className="w-8 h-8" />
+                </div>
+                <h2 className="text-2xl font-bold text-white mb-2">HTTPS Required for Camera & Mic</h2>
+                <p className="text-slate-300 text-sm mb-6 leading-relaxed">
+                  Web browsers disable camera and microphone APIs over plain HTTP LAN IP addresses. Camera access is only allowed over <span className="font-semibold text-white">HTTPS</span> or <span className="font-semibold text-white">localhost</span>.
+                </p>
+                <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 text-left text-xs space-y-2 text-slate-300 font-mono">
+                  <div className="text-indigo-300 font-bold">Recommended Solutions:</div>
+                  <div>1. Use the HTTPS Local Tunnel URL created by the server.</div>
+                  <div>2. Or open <span className="text-indigo-400">chrome://flags/#unsafely-treat-insecure-origin-as-secure</span> and add <span className="text-indigo-400">{typeof window !== 'undefined' ? window.location.origin : ''}</span></div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <Loader2 className="w-12 h-12 animate-spin text-indigo-400 mb-4" />
+                <h2 className="text-2xl font-bold mb-2 text-center">
+                  {callStatus === 'ringing'
+                    ? 'Ringing Recipient...'
+                    : callStatus === 'connecting'
+                    ? 'Connecting Call Room...'
+                    : 'Waiting for Peer to Connect...'}
+                </h2>
+                <p className="text-slate-400 text-sm text-center">
+                  {callSession?.guestName || 'Guest'} &bull; {callSession?.receiverName || 'Host'}
+                </p>
+              </>
+            )}
           </div>
         )}
       </div>

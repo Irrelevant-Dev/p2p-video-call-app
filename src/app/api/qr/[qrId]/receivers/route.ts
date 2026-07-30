@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/db';
 import { qrCodes, qrCodeReceivers, receivers } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, ne } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,7 +25,7 @@ export async function GET(
       );
     }
 
-    // Fetch mapped receivers
+    // Fetch mapped receivers excluding mock receiver if real receivers exist
     let mappedReceivers = await db
       .select({
         clerkUserId: receivers.clerkUserId,
@@ -39,15 +39,23 @@ export async function GET(
       )
       .where(eq(qrCodeReceivers.qrCodeId, qrId));
 
-    // Fallback: If no mapped receivers or only mock receiver, return all registered hosts
-    if (mappedReceivers.length === 0) {
+    // Filter out mock user if real Clerk hosts exist
+    const realReceivers = mappedReceivers.filter(
+      (r) => r.clerkUserId !== 'user_mock_receiver_123'
+    );
+
+    if (realReceivers.length > 0) {
+      mappedReceivers = realReceivers;
+    } else if (mappedReceivers.length === 0) {
+      // Fallback: fetch all real hosts from receivers table
       mappedReceivers = await db
         .select({
           clerkUserId: receivers.clerkUserId,
           displayName: receivers.displayName,
           avatarUrl: receivers.avatarUrl,
         })
-        .from(receivers);
+        .from(receivers)
+        .where(ne(receivers.clerkUserId, 'user_mock_receiver_123'));
     }
 
     return NextResponse.json({
