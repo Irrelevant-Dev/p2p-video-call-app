@@ -19,11 +19,11 @@ export function setupSignalingServer(httpServer: HTTPServer) {
   io.on('connection', (socket: Socket) => {
     console.log(`Socket client connected: ${socket.id}`);
 
-    // Join receiver host presence room
+    // Join receiver host presence rooms
     socket.on('register-receiver', ({ receiverId }) => {
+      socket.join('hosts:all');
       if (receiverId) {
-        const room = `receiver:${receiverId}`;
-        socket.join(room);
+        socket.join(`receiver:${receiverId}`);
         console.log(`Socket ${socket.id} registered as receiver ${receiverId}`);
       }
     });
@@ -32,15 +32,27 @@ export function setupSignalingServer(httpServer: HTTPServer) {
     socket.on('join-room', ({ callId, userType }) => {
       const roomName = `call:${callId}`;
       socket.join(roomName);
-      console.log(`Socket ${socket.id} (${userType}) joined room ${roomName}`);
+      const roomSize = io.sockets.adapter.rooms.get(roomName)?.size || 1;
+      console.log(`Socket ${socket.id} (${userType}) joined room ${roomName}. Room size: ${roomSize}`);
 
       // Notify others in room
       socket.to(roomName).emit('peer-joined', { socketId: socket.id, userType });
+
+      // If 2 or more peers are present in room, emit room-ready to both peers
+      if (roomSize >= 2) {
+        console.log(`Room ${roomName} is ready with ${roomSize} peers. Emitting room-ready.`);
+        io.to(roomName).emit('room-ready');
+      }
     });
 
-    // Notify receiver of incoming call
+    // Notify target receiver AND all connected hosts of incoming call
     socket.on('notify-receiver', ({ targetReceiverId, callId, guestName }) => {
+      console.log(`Broadcasting incoming call ${callId} for target ${targetReceiverId}`);
       io.to(`receiver:${targetReceiverId}`).emit('incoming-call', {
+        callId,
+        guestName,
+      });
+      io.to('hosts:all').emit('incoming-call', {
         callId,
         guestName,
       });
@@ -48,11 +60,13 @@ export function setupSignalingServer(httpServer: HTTPServer) {
 
     // Relay WebRTC Offer
     socket.on('offer', ({ callId, offer }) => {
+      console.log(`Relaying SDP offer for call ${callId}`);
       socket.to(`call:${callId}`).emit('offer', { offer, from: socket.id });
     });
 
     // Relay WebRTC Answer
     socket.on('answer', ({ callId, answer }) => {
+      console.log(`Relaying SDP answer for call ${callId}`);
       socket.to(`call:${callId}`).emit('answer', { answer, from: socket.id });
     });
 

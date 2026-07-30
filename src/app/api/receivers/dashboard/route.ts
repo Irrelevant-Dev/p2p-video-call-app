@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { auth, currentUser } from '@clerk/nextjs/server';
 import { db } from '@/db';
 import { qrCodes, qrCodeReceivers, callSessions, receivers } from '@/db/schema';
 import { eq, desc } from 'drizzle-orm';
@@ -9,13 +9,51 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   try {
     const { userId } = await auth();
-    const targetUserId = userId || 'user_mock_receiver_123';
+    const user = await currentUser();
 
-    // Ensure receiver record exists in Postgres
+    const targetUserId = userId || 'user_mock_receiver_123';
+    const email = user?.emailAddresses[0]?.emailAddress || 'host@example.com';
+    const displayName =
+      `${user?.firstName || ''} ${user?.lastName || ''}`.trim() || email.split('@')[0] || 'Front Desk Host';
+    const avatarUrl = user?.imageUrl || 'https://images.clerk.dev/static/default-user-avatar.svg';
+
+    // 1. Upsert receiver into Postgres
     const [existingReceiver] = await db
-      .select()
-      .from(receivers)
-      .where(eq(receivers.clerkUserId, targetUserId));
+      .insert(receivers)
+      .values({
+        clerkUserId: targetUserId,
+        email,
+        displayName,
+        avatarUrl,
+      })
+      .onConflictDoUpdate({
+        target: receivers.clerkUserId,
+        set: { displayName, avatarUrl, email },
+      })
+      .returning();
+
+    // 2. Fetch all QR codes in system
+    let allQrCodes = await db.select().from(qrCodes);
+
+    // If no QR code exists, seed a default station
+    if (allQrCodes.length === 0) {
+      const [defaultQr] = await db
+        .insert(qrCodes)
+        .values({ label: 'Main Entrance Lobby Kiosk' })
+        .returning();
+      allQrCodes = [defaultQr];
+    }
+
+    // 3. Auto-link user to all QR codes
+    for (const qr of allQrCodes) {
+      await db
+        .insert(qrCodeReceivers)
+        .values({
+          qrCodeId: qr.id,
+          receiverId: targetUserId,
+        })
+        .onConflictDoNothing();
+    }
 
     // Fetch assigned QR codes
     const assignedQrCodes = await db
@@ -37,7 +75,7 @@ export async function GET(request: Request) {
       .limit(10);
 
     return NextResponse.json({
-      receiver: existingReceiver || { clerkUserId: targetUserId, displayName: 'Host' },
+      receiver: existingReceiver,
       qrCodes: assignedQrCodes,
       recentCalls,
     });

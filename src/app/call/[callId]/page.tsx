@@ -32,6 +32,8 @@ export default function CallRoomPage() {
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const isOfferingRef = useRef(false);
 
   useEffect(() => {
     async function initCall() {
@@ -60,8 +62,19 @@ export default function CallRoomPage() {
         // Add local tracks to peer connection
         stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
+        // Listen for WebRTC connection state changes
+        pc.onconnectionstatechange = () => {
+          console.log(`RTCPeerConnection state: ${pc.connectionState}`);
+          if (pc.connectionState === 'connected') {
+            setCallStatus('active');
+          } else if (pc.connectionState === 'failed') {
+            setCallStatus('failed');
+          }
+        };
+
         // Handle incoming remote track
         pc.ontrack = (event) => {
+          console.log('Received remote media track:', event.streams[0]);
           if (remoteVideoRef.current && event.streams[0]) {
             remoteVideoRef.current.srcObject = event.streams[0];
             setCallStatus('active');
@@ -81,20 +94,45 @@ export default function CallRoomPage() {
           }
         };
 
-        // Peer Joined Event -> Create Offer if caller/guest
-        socket.on('peer-joined', async () => {
-          if (userRole === 'guest') {
+        // Helper to create and send offer
+        async function initiateOffer() {
+          if (userRole === 'guest' && !isOfferingRef.current && pc.signalingState === 'stable') {
+            isOfferingRef.current = true;
+            console.log('Initiating WebRTC SDP Offer...');
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
             socket.emit('offer', { callId, offer });
             setCallStatus('ringing');
           }
+        }
+
+        // Room Ready or Peer Joined Event -> Initiate Offer if guest caller
+        socket.on('peer-joined', () => {
+          console.log('Peer joined event received');
+          initiateOffer();
         });
 
-        // Handle Incoming Offer
+        socket.on('room-ready', () => {
+          console.log('Room ready event received');
+          initiateOffer();
+        });
+
+        // Helper to flush pending ICE candidates
+        async function flushPendingCandidates() {
+          while (pendingCandidatesRef.current.length > 0) {
+            const candidate = pendingCandidatesRef.current.shift();
+            if (candidate && pc.remoteDescription) {
+              await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+          }
+        }
+
+        // Handle Incoming Offer (Callee / Host)
         socket.on('offer', async ({ offer }) => {
           if (userRole !== 'guest') {
+            console.log('Received SDP Offer, creating Answer...');
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            await flushPendingCandidates();
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             socket.emit('answer', { callId, answer });
@@ -102,9 +140,11 @@ export default function CallRoomPage() {
           }
         });
 
-        // Handle Incoming Answer
+        // Handle Incoming Answer (Caller / Guest)
         socket.on('answer', async ({ answer }) => {
+          console.log('Received SDP Answer from host');
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          await flushPendingCandidates();
           setCallStatus('active');
         });
 
@@ -112,6 +152,8 @@ export default function CallRoomPage() {
         socket.on('ice-candidate', async ({ candidate }) => {
           if (pc.remoteDescription) {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } else {
+            pendingCandidatesRef.current.push(candidate);
           }
         });
 

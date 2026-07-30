@@ -3,6 +3,8 @@ import { db } from '@/db';
 import { qrCodes, qrCodeReceivers, receivers } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(
   request: Request,
   { params }: { params: { qrId: string } }
@@ -24,7 +26,7 @@ export async function GET(
     }
 
     // Fetch mapped receivers
-    const mappedReceivers = await db
+    let mappedReceivers = await db
       .select({
         clerkUserId: receivers.clerkUserId,
         displayName: receivers.displayName,
@@ -36,6 +38,17 @@ export async function GET(
         eq(qrCodeReceivers.receiverId, receivers.clerkUserId)
       )
       .where(eq(qrCodeReceivers.qrCodeId, qrId));
+
+    // Fallback: If no mapped receivers or only mock receiver, return all registered hosts
+    if (mappedReceivers.length === 0) {
+      mappedReceivers = await db
+        .select({
+          clerkUserId: receivers.clerkUserId,
+          displayName: receivers.displayName,
+          avatarUrl: receivers.avatarUrl,
+        })
+        .from(receivers);
+    }
 
     return NextResponse.json({
       qrCode: {

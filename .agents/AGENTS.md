@@ -14,3 +14,4 @@ All design decisions, development progress, implementations, test results, and t
 1. Every new feature, design decision, test run, or troubleshooting session must update or create corresponding documents in `documentation/` under the appropriate category.
 2. Maintain clear cross-references between code changes and documentation files.
 3. Keep documents updated whenever specs, implementations, or fixes change.
+4. ALWAYS explain troubleshooting rationale, diagnostic findings, and root cause discoveries to the user BEFORE proposing or applying code fixes.

@@ -35,4 +35,4 @@ This document logs root cause analyses, debugging steps, common error patterns, 
 
 | Incident ID | Date | Category | Summary | Root Cause & Fix |
 |---|---|---|---|---|
-| *None* | - | - | Initial log state | No incidents logged yet. |
+| **INC-001** | 2026-07-30 | Signaling / Auth | Colleague on Dashboard not receiving incoming call notification | **Root Cause**: QR code was mapped to mock user `user_mock_receiver_123`. Real Clerk user ID (`user_3HEK...`) had no mapping in `qr_code_receivers`. <br/>**Fix**: Auto-upsert Clerk hosts into `receivers` and `qr_code_receivers` on `/dashboard` load, and broadcast `incoming-call` events to `hosts:all` room. |
