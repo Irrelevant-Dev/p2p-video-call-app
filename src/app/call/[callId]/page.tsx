@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, User, Loader2, Terminal, ChevronDown, ChevronUp, AlertTriangle, Lock } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, User, Loader2, Terminal, ChevronDown, ChevronUp, Lock } from 'lucide-react';
 
 const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
@@ -28,7 +28,9 @@ export default function CallRoomPage() {
   const router = useRouter();
 
   const callId = params.callId as string;
-  const userRole = searchParams.get('role') || 'host';
+
+  // Determine user role safely from searchParams or URL search string
+  const [userRole, setUserRole] = useState<string>('guest');
 
   const [callSession, setCallSession] = useState<any>(null);
   const [callStatus, setCallStatus] = useState<string>('connecting');
@@ -58,9 +60,20 @@ export default function CallRoomPage() {
   }
 
   useEffect(() => {
+    // Resolve role on client mount
+    let currentRole = 'guest';
+    if (typeof window !== 'undefined') {
+      const urlRole = new URLSearchParams(window.location.search).get('role');
+      if (urlRole) currentRole = urlRole;
+    }
+    if (searchParams.get('role')) {
+      currentRole = searchParams.get('role')!;
+    }
+    setUserRole(currentRole);
+
     async function initCall() {
       try {
-        log(`Initializing call session: ${callId} as role: ${userRole}`, 'info');
+        log(`Initializing call session: ${callId} as role: ${currentRole}`, 'info');
 
         // Fetch call details
         const res = await fetch(`/api/calls/${callId}`);
@@ -135,8 +148,8 @@ export default function CallRoomPage() {
 
         socket.on('connect', () => {
           log(`Connected to Socket server with ID: ${socket.id}`, 'success');
-          socket.emit('join-room', { callId, userType: userRole });
-          log(`Sent 'join-room' for room: call:${callId}`, 'info');
+          socket.emit('join-room', { callId, userType: currentRole });
+          log(`Sent 'join-room' for room: call:${callId} (role: ${currentRole})`, 'info');
         });
 
         // Handle ICE Candidates from local peer
@@ -151,10 +164,10 @@ export default function CallRoomPage() {
 
         // Helper to create and send offer
         async function initiateOffer() {
-          if (userRole === 'guest' && !isOfferingRef.current && pc.signalingState === 'stable') {
+          if (!isOfferingRef.current && pc.signalingState === 'stable') {
             try {
               isOfferingRef.current = true;
-              log('Guest initiating WebRTC SDP Offer...', 'info');
+              log('Initiating WebRTC SDP Offer...', 'info');
               const offer = await pc.createOffer();
               log('Created SDP Offer successfully. Setting local description...', 'info');
               await pc.setLocalDescription(offer);
@@ -168,15 +181,19 @@ export default function CallRoomPage() {
           }
         }
 
-        // Room Ready or Peer Joined Event -> Initiate Offer if guest caller
+        // Room Ready or Peer Joined Event -> Initiate Offer if guest or first peer
         socket.on('peer-joined', ({ userType }) => {
           log(`Peer joined event received (Peer role: ${userType})`, 'info');
-          initiateOffer();
+          if (currentRole === 'guest') {
+            initiateOffer();
+          }
         });
 
         socket.on('room-ready', () => {
           log('Room ready signal received from server (2+ peers present)', 'success');
-          initiateOffer();
+          if (currentRole === 'guest') {
+            initiateOffer();
+          }
         });
 
         // Helper to flush pending ICE candidates
@@ -197,31 +214,29 @@ export default function CallRoomPage() {
           }
         }
 
-        // Handle Incoming Offer (Host Receiver)
+        // Handle Incoming Offer (Role-Agnostic Fail-Safe Responder)
         socket.on('offer', async ({ offer, from }) => {
-          if (userRole !== 'guest') {
-            try {
-              log(`Received SDP Offer from peer ${from}`, 'info');
-              await pc.setRemoteDescription(new RTCSessionDescription(offer));
-              log('Remote description set from offer. Flushing ICE queue...', 'success');
-              await flushPendingCandidates();
+          try {
+            log(`Received SDP Offer from remote peer ${from}`, 'info');
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            log('Remote description set from offer. Flushing ICE queue...', 'success');
+            await flushPendingCandidates();
 
-              log('Creating SDP Answer...', 'info');
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              log('Local description set for answer. Transmitting answer over Socket...', 'success');
-              socket.emit('answer', { callId, answer });
-              setCallStatus('active');
-            } catch (err: any) {
-              log(`Error processing offer/answer: ${err.message}`, 'error');
-            }
+            log('Creating SDP Answer...', 'info');
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            log('Local description set for answer. Transmitting answer over Socket...', 'success');
+            socket.emit('answer', { callId, answer });
+            setCallStatus('active');
+          } catch (err: any) {
+            log(`Error processing offer/answer: ${err.message}`, 'error');
           }
         });
 
-        // Handle Incoming Answer (Guest Caller)
+        // Handle Incoming Answer
         socket.on('answer', async ({ answer, from }) => {
           try {
-            log(`Received SDP Answer from peer ${from}`, 'success');
+            log(`Received SDP Answer from remote peer ${from}`, 'success');
             await pc.setRemoteDescription(new RTCSessionDescription(answer));
             log('Remote description set from answer. Flushing ICE queue...', 'success');
             await flushPendingCandidates();
@@ -263,7 +278,7 @@ export default function CallRoomPage() {
     return () => {
       cleanupMedia();
     };
-  }, [callId, userRole]);
+  }, [callId, searchParams]);
 
   function cleanupMedia() {
     if (localStreamRef.current) {
