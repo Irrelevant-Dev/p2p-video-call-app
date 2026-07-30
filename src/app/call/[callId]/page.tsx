@@ -3,14 +3,24 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, User, Loader2 } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, User, Loader2, Terminal, ChevronDown, ChevronUp } from 'lucide-react';
 
-const ICE_SERVERS = {
+const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
   ],
 };
+
+interface LogEntry {
+  id: string;
+  time: string;
+  message: string;
+  type: 'info' | 'success' | 'warn' | 'error';
+}
 
 export default function CallRoomPage() {
   const params = useParams();
@@ -26,6 +36,10 @@ export default function CallRoomPage() {
   const [micEnabled, setMicEnabled] = useState(true);
   const [cameraEnabled, setCameraEnabled] = useState(true);
 
+  // Diagnostic Logs state
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [showLogs, setShowLogs] = useState(true);
+
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -35,46 +49,71 @@ export default function CallRoomPage() {
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const isOfferingRef = useRef(false);
 
+  function log(message: string, type: 'info' | 'success' | 'warn' | 'error' = 'info') {
+    const time = new Date().toLocaleTimeString();
+    const entry: LogEntry = { id: Math.random().toString(), time, message, type };
+    console.log(`[CallDiagnostic ${time}] [${type.toUpperCase()}] ${message}`);
+    setLogs((prev) => [...prev.slice(-49), entry]);
+  }
+
   useEffect(() => {
     async function initCall() {
       try {
+        log(`Initializing call session: ${callId} as role: ${userRole}`, 'info');
+
         // Fetch call details
         const res = await fetch(`/api/calls/${callId}`);
-        if (!res.ok) throw new Error('Call session not found');
+        if (!res.ok) throw new Error('Call session not found in database');
         const sessionData = await res.json();
         setCallSession(sessionData);
+        log(`Call session retrieved (Guest: ${sessionData.guestName})`, 'success');
 
         // Get Local Media Stream
+        log('Requesting local camera & microphone access...', 'info');
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
         });
         localStreamRef.current = stream;
+        log(`Acquired local media stream (Video tracks: ${stream.getVideoTracks().length}, Audio tracks: ${stream.getAudioTracks().length})`, 'success');
 
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
 
         // Initialize PeerConnection
+        log('Creating RTCPeerConnection with Google STUN servers...', 'info');
         const pc = new RTCPeerConnection(ICE_SERVERS);
         pcRef.current = pc;
 
         // Add local tracks to peer connection
-        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        stream.getTracks().forEach((track) => {
+          pc.addTrack(track, stream);
+          log(`Added local ${track.kind} track to RTCPeerConnection`, 'info');
+        });
 
-        // Listen for WebRTC connection state changes
+        // Connection state monitoring
         pc.onconnectionstatechange = () => {
-          console.log(`RTCPeerConnection state: ${pc.connectionState}`);
+          log(`RTCPeerConnection state changed to: ${pc.connectionState}`, pc.connectionState === 'connected' ? 'success' : 'info');
           if (pc.connectionState === 'connected') {
             setCallStatus('active');
           } else if (pc.connectionState === 'failed') {
+            log('Peer connection failed. Check NAT/firewall settings.', 'error');
             setCallStatus('failed');
           }
         };
 
+        pc.oniceconnectionstatechange = () => {
+          log(`ICE Connection state: ${pc.iceConnectionState}`, pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed' ? 'success' : 'info');
+        };
+
+        pc.onicegatheringstatechange = () => {
+          log(`ICE Gathering state: ${pc.iceGatheringState}`, 'info');
+        };
+
         // Handle incoming remote track
         pc.ontrack = (event) => {
-          console.log('Received remote media track:', event.streams[0]);
+          log(`Received remote track (${event.track.kind}). Stream ID: ${event.streams[0]?.id}`, 'success');
           if (remoteVideoRef.current && event.streams[0]) {
             remoteVideoRef.current.srcObject = event.streams[0];
             setCallStatus('active');
@@ -82,88 +121,131 @@ export default function CallRoomPage() {
         };
 
         // Initialize Socket.io Connection
+        log('Connecting to Socket.io signaling server...', 'info');
         const socket = io();
         socketRef.current = socket;
 
-        socket.emit('join-room', { callId, userType: userRole });
+        socket.on('connect', () => {
+          log(`Connected to Socket server with ID: ${socket.id}`, 'success');
+          socket.emit('join-room', { callId, userType: userRole });
+          log(`Sent 'join-room' for room: call:${callId}`, 'info');
+        });
 
-        // Handle ICE Candidates
+        // Handle ICE Candidates from local peer
         pc.onicecandidate = (event) => {
           if (event.candidate) {
+            log(`Gathered ICE Candidate: ${event.candidate.type || 'host'} (${event.candidate.protocol})`, 'info');
             socket.emit('ice-candidate', { callId, candidate: event.candidate });
+          } else {
+            log('All local ICE candidates gathered.', 'info');
           }
         };
 
         // Helper to create and send offer
         async function initiateOffer() {
           if (userRole === 'guest' && !isOfferingRef.current && pc.signalingState === 'stable') {
-            isOfferingRef.current = true;
-            console.log('Initiating WebRTC SDP Offer...');
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket.emit('offer', { callId, offer });
-            setCallStatus('ringing');
+            try {
+              isOfferingRef.current = true;
+              log('Guest initiating WebRTC SDP Offer...', 'info');
+              const offer = await pc.createOffer();
+              log('Created SDP Offer successfully. Setting local description...', 'info');
+              await pc.setLocalDescription(offer);
+              log('Local description set. Transmitting offer over Socket...', 'info');
+              socket.emit('offer', { callId, offer });
+              setCallStatus('ringing');
+            } catch (err: any) {
+              log(`Failed to create/send offer: ${err.message}`, 'error');
+              isOfferingRef.current = false;
+            }
           }
         }
 
         // Room Ready or Peer Joined Event -> Initiate Offer if guest caller
-        socket.on('peer-joined', () => {
-          console.log('Peer joined event received');
+        socket.on('peer-joined', ({ userType }) => {
+          log(`Peer joined event received (Peer role: ${userType})`, 'info');
           initiateOffer();
         });
 
         socket.on('room-ready', () => {
-          console.log('Room ready event received');
+          log('Room ready signal received from server (2+ peers present)', 'success');
           initiateOffer();
         });
 
         // Helper to flush pending ICE candidates
         async function flushPendingCandidates() {
-          while (pendingCandidatesRef.current.length > 0) {
-            const candidate = pendingCandidatesRef.current.shift();
-            if (candidate && pc.remoteDescription) {
-              await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          if (pendingCandidatesRef.current.length > 0) {
+            log(`Flushing ${pendingCandidatesRef.current.length} queued ICE candidates...`, 'info');
+            while (pendingCandidatesRef.current.length > 0) {
+              const candidate = pendingCandidatesRef.current.shift();
+              if (candidate && pc.remoteDescription) {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (e: any) {
+                  log(`Failed to add queued candidate: ${e.message}`, 'warn');
+                }
+              }
             }
+            log('Queued ICE candidates flushed successfully', 'success');
           }
         }
 
-        // Handle Incoming Offer (Callee / Host)
-        socket.on('offer', async ({ offer }) => {
+        // Handle Incoming Offer (Host Receiver)
+        socket.on('offer', async ({ offer, from }) => {
           if (userRole !== 'guest') {
-            console.log('Received SDP Offer, creating Answer...');
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            await flushPendingCandidates();
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket.emit('answer', { callId, answer });
-            setCallStatus('active');
+            try {
+              log(`Received SDP Offer from peer ${from}`, 'info');
+              await pc.setRemoteDescription(new RTCSessionDescription(offer));
+              log('Remote description set from offer. Flushing ICE queue...', 'success');
+              await flushPendingCandidates();
+
+              log('Creating SDP Answer...', 'info');
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              log('Local description set for answer. Transmitting answer over Socket...', 'success');
+              socket.emit('answer', { callId, answer });
+              setCallStatus('active');
+            } catch (err: any) {
+              log(`Error processing offer/answer: ${err.message}`, 'error');
+            }
           }
         });
 
-        // Handle Incoming Answer (Caller / Guest)
-        socket.on('answer', async ({ answer }) => {
-          console.log('Received SDP Answer from host');
-          await pc.setRemoteDescription(new RTCSessionDescription(answer));
-          await flushPendingCandidates();
-          setCallStatus('active');
+        // Handle Incoming Answer (Guest Caller)
+        socket.on('answer', async ({ answer, from }) => {
+          try {
+            log(`Received SDP Answer from peer ${from}`, 'success');
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            log('Remote description set from answer. Flushing ICE queue...', 'success');
+            await flushPendingCandidates();
+            setCallStatus('active');
+          } catch (err: any) {
+            log(`Error setting remote answer: ${err.message}`, 'error');
+          }
         });
 
         // Handle Incoming ICE Candidate
         socket.on('ice-candidate', async ({ candidate }) => {
           if (pc.remoteDescription) {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(candidate));
+              log('Added remote ICE Candidate directly', 'info');
+            } catch (e: any) {
+              log(`Failed to add remote candidate: ${e.message}`, 'warn');
+            }
           } else {
+            log('Remote description not ready. Queuing incoming ICE Candidate...', 'warn');
             pendingCandidatesRef.current.push(candidate);
           }
         });
 
         // Handle Call Termination
         socket.on('call:ended', () => {
+          log('Call ended by remote peer', 'warn');
           setCallStatus('ended');
           cleanupMedia();
         });
       } catch (err: any) {
-        console.error('Call initialization failed:', err);
+        log(`Call initialization error: ${err.message}`, 'error');
         setCallStatus('failed');
       }
     }
@@ -193,6 +275,7 @@ export default function CallRoomPage() {
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setMicEnabled(audioTrack.enabled);
+        log(`Microphone ${audioTrack.enabled ? 'unmuted' : 'muted'}`, 'info');
       }
     }
   }
@@ -203,6 +286,7 @@ export default function CallRoomPage() {
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setCameraEnabled(videoTrack.enabled);
+        log(`Camera ${videoTrack.enabled ? 'turned on' : 'turned off'}`, 'info');
       }
     }
   }
@@ -237,16 +321,16 @@ export default function CallRoomPage() {
           className="w-full h-full object-cover"
         />
         {callStatus !== 'active' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-md z-10">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-md z-10 p-6">
             <Loader2 className="w-12 h-12 animate-spin text-indigo-400 mb-4" />
-            <h2 className="text-2xl font-bold mb-2">
+            <h2 className="text-2xl font-bold mb-2 text-center">
               {callStatus === 'ringing'
                 ? 'Ringing Recipient...'
                 : callStatus === 'connecting'
                 ? 'Connecting Call Room...'
                 : 'Waiting for Peer to Connect...'}
             </h2>
-            <p className="text-slate-400 text-sm">
+            <p className="text-slate-400 text-sm text-center">
               {callSession?.guestName || 'Guest'} &bull; {callSession?.receiverName || 'Host'}
             </p>
           </div>
@@ -274,10 +358,52 @@ export default function CallRoomPage() {
         <div className="flex items-center space-x-3">
           <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></div>
           <span className="font-semibold text-slate-200">
-            P2P Room: <span className="font-mono text-indigo-300">{callId.slice(0, 8)}</span>
+            P2P Room: <span className="font-mono text-indigo-300">{callId.slice(0, 8)}</span> ({userRole.toUpperCase()})
           </span>
         </div>
+
+        <button
+          onClick={() => setShowLogs(!showLogs)}
+          className="px-3 py-1.5 bg-slate-900/80 hover:bg-slate-800 border border-slate-700 rounded-xl text-xs font-mono text-indigo-300 flex items-center space-x-2 transition"
+        >
+          <Terminal className="w-4 h-4" />
+          <span>{showLogs ? 'Hide Diagnostics' : 'Show Diagnostics'}</span>
+          {showLogs ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+        </button>
       </div>
+
+      {/* Real-time Diagnostic Log Console Overlay */}
+      {showLogs && (
+        <div className="relative z-30 mx-6 mb-4 max-h-44 bg-slate-950/90 border border-indigo-500/40 rounded-2xl p-4 overflow-y-auto font-mono text-xs shadow-2xl backdrop-blur-md">
+          <div className="flex items-center justify-between text-slate-400 text-[10px] uppercase tracking-wider mb-2 pb-1 border-b border-slate-800">
+            <span>WebRTC Diagnostic Console Stream</span>
+            <span>{logs.length} events logged</span>
+          </div>
+          {logs.length === 0 ? (
+            <div className="text-slate-500 italic">Initializing WebRTC diagnostic stream...</div>
+          ) : (
+            <div className="space-y-1">
+              {logs.map((e) => (
+                <div
+                  key={e.id}
+                  className={`flex items-start space-x-2 ${
+                    e.type === 'error'
+                      ? 'text-red-400 font-semibold'
+                      : e.type === 'warn'
+                      ? 'text-amber-300'
+                      : e.type === 'success'
+                      ? 'text-emerald-400'
+                      : 'text-slate-300'
+                  }`}
+                >
+                  <span className="text-slate-500 shrink-0">[{e.time}]</span>
+                  <span>{e.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Call Action Bar Overlay (Bottom Center) */}
       <div className="relative z-20 p-6 flex items-center justify-center bg-gradient-to-t from-slate-950/90 to-transparent">
