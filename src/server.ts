@@ -4,10 +4,10 @@ import next from 'next';
 import { setupSignalingServer } from './lib/signaling';
 
 const dev = process.env.NODE_ENV !== 'production';
-const hostname = 'localhost';
+const hostname = '0.0.0.0';
 const port = parseInt(process.env.PORT || '3000', 10);
 
-const app = next({ dev, hostname, port });
+const app = next({ dev, hostname: 'localhost', port });
 const handle = app.getRequestHandler();
 
 app.prepare().then(() => {
@@ -18,8 +18,9 @@ app.prepare().then(() => {
 
   setupSignalingServer(httpServer);
 
-  httpServer.listen(port, () => {
-    console.log(`> Server ready on http://${hostname}:${port}`);
+  httpServer.listen(port, hostname, () => {
+    console.log(`> Server ready on http://localhost:${port}`);
+    console.log(`> LAN access on http://192.168.1.37:${port}`);
     console.log(`> Socket.io WebRTC signaling server active`);
   });
 });
